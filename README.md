@@ -5,6 +5,8 @@
 Optimal Brain Restoration for Joint Quantization and Sparsification of LLMs 
 </h2>
 
+**ICLR2026**
+
 [Hang Guo](https://csguoh.github.io/), [Yawei Li](https://yaweili.bitbucket.io/), [Luca Benini](https://ee.ethz.ch/the-department/people-a-z/person-detail.luca-benini.html)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=csguoh.OBR)
@@ -68,6 +70,7 @@ Recent advances in Large Language Model (LLM) compression, such as quantization 
 
 - **2025-09-16:** arXiv paper available.
 - **2025-09-16:** This repo is released and we have open sourced all our code and weights!
+- **2026-01-26:** Congrats! Our OBR has been accepted by ICLR2026 🎉🎉🎉
 
 
 
