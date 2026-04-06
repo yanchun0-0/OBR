@@ -183,7 +183,10 @@ class OBR_Wrapper:
 
 
 
-    def optimal_brain_restoration(self, percdamp=.01,sparsity_ratio = 0.5, prune_n=0, prune_m = 0, obr_rtn=False,obr_alpha=0.5, blocksize=128,):
+    def optimal_brain_restoration(self, percdamp=.01, sparsity_ratio=0.5, prune_n=0, prune_m=0,
+                                  obr_rtn=False, obr_alpha=0.5, blocksize=128,
+                                  pairbit_mode=False, pairbit_direct_only=True,
+                                  pairbit_use_obr_comp=False):
         # print('Optimal Brain Restoration')
         W = self.layer.weight.data.clone()
         W = W.float()
@@ -202,46 +205,49 @@ class OBR_Wrapper:
         ##############
 
         #################
-        Delta = torch.zeros_like(W)
+        apply_obr_comp = (not pairbit_mode) or ((not pairbit_direct_only) and pairbit_use_obr_comp)
+        if apply_obr_comp:
+            Delta = torch.zeros_like(W)
+            for c in range(self.rows):
+                mask_row = W_mask[c]
+                I = torch.nonzero(mask_row, as_tuple=False).squeeze(1)
+                Z = torch.nonzero(~mask_row.bool(), as_tuple=False).squeeze(1)
+                if I.numel() == 0 or Z.numel() == 0:
+                    continue
 
-        for c in range(self.rows):
-            mask_row = W_mask[c]
-            I = torch.nonzero(mask_row, as_tuple=False).squeeze(1)
-            Z = torch.nonzero(~mask_row.bool(), as_tuple=False).squeeze(1)
-            if I.numel() == 0 or Z.numel() == 0:
-                continue
+                H_II = XTX[I][:, I]
+                H_IZ = XTX[I][:, Z]
+                W_z = W[c, Z]
+                b = H_IZ.matmul(W_z)
 
-            H_II = XTX[I][:, I]
-            H_IZ = XTX[I][:, Z]
-            W_z = W[c, Z]
-            b = H_IZ.matmul(W_z)
+                L = torch.linalg.cholesky(H_II)
+                delta_w = torch.cholesky_solve(b.unsqueeze(-1), L).squeeze(-1)
 
-            L = torch.linalg.cholesky(H_II)
-            delta_w = torch.cholesky_solve(b.unsqueeze(-1), L).squeeze(-1)
+                w_prime = W_bar[c, I].clone()
+                w_prime = w_prime + delta_w
 
-            w_prime = W_bar[c,I].clone()
-            w_prime =  w_prime + delta_w
+                quantized = self.quantizer.quantize_one_row(w_prime, c)
+                e_full = w_prime - quantized
+                partation_point = torch.searchsorted(I, int(W.shape[1] * obr_alpha), right=False)
+                idx_1 = torch.arange(0, partation_point)
+                idx_2 = torch.arange(partation_point, I.shape[0])
+                e_full = e_full[idx_1]
+                HII_1 = H_II[idx_2][:, idx_1]
+                HII_2 = H_II[idx_2][:, idx_2]
+                b2 = HII_1.matmul(e_full)
+                L2 = torch.linalg.cholesky(HII_2)
+                delta_w1 = torch.cholesky_solve(b2.unsqueeze(-1), L2).squeeze(-1)
 
-            quantized = self.quantizer.quantize_one_row(w_prime, c)
-            e_full =  w_prime - quantized
-            partation_point = torch.searchsorted(I, int(W.shape[1]*obr_alpha), right=False)
-            idx_1 =  torch.arange(0, partation_point)
-            idx_2 =  torch.arange(partation_point,I.shape[0])
-            e_full = e_full[idx_1]
-            HII_1 = H_II[idx_2][:, idx_1]
-            HII_2 = H_II[idx_2][:, idx_2]
-            b2 = HII_1.matmul(e_full)
-            L2 = torch.linalg.cholesky(HII_2)
-            delta_w1 = torch.cholesky_solve(b2.unsqueeze(-1), L2).squeeze(-1)
-
-            delta_w[idx_2] += delta_w1
-            Delta[c, I] = delta_w
-
-
-        W = W_bar + Delta
+                delta_w[idx_2] += delta_w1
+                Delta[c, I] = delta_w
+            W = W_bar + Delta
+        else:
+            W = W_bar
         torch.cuda.synchronize()
         #####################################
-        if obr_rtn:
+        if pairbit_mode and pairbit_direct_only:
+            q = obr_rtn_quantization(W, self.quantizer)
+        elif obr_rtn:
             q = obr_rtn_quantization(W,self.quantizer)
         #########################################
         else:
@@ -320,6 +326,16 @@ def obr_fwrd(model, dataloader, dev, args):
                 ['mlp.up_proj.module', 'mlp.gate_proj.module'],
                 ['mlp.down_proj.module']
             ]
+    pairbit_enable = getattr(args, 'pairbit_enable', False)
+    pairbit_direct_only = getattr(args, 'pairbit_direct_only', True)
+    pairbit_use_obr_comp = getattr(args, 'pairbit_use_obr_comp', False)
+    pairbit_apply_to = getattr(args, 'pairbit_apply_to', 'k_proj_only')
+
+    def _pairbit_target_layer(name):
+        if pairbit_apply_to == 'all_linear':
+            return True
+        return name == 'self_attn.k_proj.module'
+
     for i in range(len(layers)):
         print(f'\nLayer {i}:', flush=True, end=' ')
         layer = layers[i].to(dev)
@@ -357,11 +373,15 @@ def obr_fwrd(model, dataloader, dev, args):
 
             for name in subset:
                 # gptq[name].baseline_with_sparsegpt_gptq_obs(percdamp=args.percdamp, sparsity_ratio=args.sparsity_ratio, prune_n=args.prune_n, prune_m = args.prune_m)
+                use_pairbit_for_layer = pairbit_enable and _pairbit_target_layer(name)
                 gptq[name].optimal_brain_restoration(percdamp=args.percdamp,
                                                      sparsity_ratio=args.sparsity_ratio,
                                                      prune_n=args.prune_n, prune_m = args.prune_m,
                                                      obr_alpha=args.obr_alpha,
-                                                     obr_rtn=args.obr_rtn)
+                                                     obr_rtn=args.obr_rtn,
+                                                     pairbit_mode=use_pairbit_for_layer,
+                                                     pairbit_direct_only=pairbit_direct_only,
+                                                     pairbit_use_obr_comp=pairbit_use_obr_comp)
                 quantizers['model.layers.%d.%s' % (i, name)] = gptq[name].quantizer
                 gptq[name].free()
 
@@ -381,4 +401,3 @@ def obr_fwrd(model, dataloader, dev, args):
     utils.cleanup_memory(verbos=True)
     logging.info('-----Join Quantization & Sparsification Done!-----\n')
     return quantizers
-

@@ -129,6 +129,16 @@ def parser_gen():
                         help='act-order in GPTQ')
     parser.add_argument('--obr_alpha', type=float, default=0.5,
                         help='The Group Partition ratio in OBR_GPTQ')
+    parser.add_argument('--pairbit_enable', action='store_true', default=False,
+                        help='Enable PairBit flow for selected linear layers.')
+    parser.add_argument('--pairbit_direct_only', type=lambda x: str(x).lower() in ('true', '1', 'yes'),
+                        default=True,
+                        help='PairBit mode: use direct quantization only (default: True).')
+    parser.add_argument('--pairbit_use_obr_comp', action='store_true', default=False,
+                        help='PairBit mode: enable OBR compensation before quantization.')
+    parser.add_argument('--pairbit_apply_to', type=str, default='k_proj_only',
+                        choices=['k_proj_only', 'all_linear'],
+                        help='PairBit mode: target linear layers.')
 
 
     # Prune Parameters in obr
